@@ -75,7 +75,39 @@ def callratelimiter(query_type):
 
             self = args[0]
 
-            # determine increment
+            # public API, with an independent counter system
+            if query_type == 'public':
+                now = datetime.datetime.now()
+                lapse = (now - self.time_of_last_public_query).total_seconds()
+                if lapse < 1.0:
+                    msg = "public call frequency exceeded (seconds={})"
+                    msg = msg.format(str(lapse))
+                    raise CallRateLimitError(msg)
+
+                now = datetime.datetime.now()
+                self.time_of_last_public_query = now
+                # no retries
+                if self.retry == 0:
+                    result = func(*args, **kwargs)
+                    return result
+                # do retries
+                else:
+                    retry = max(self.retry, 1.05)
+                    attempt = 0
+                    while True:
+                        try:
+                            result = func(*args, **kwargs)
+                            return result
+                        except (HTTPError, KrakenAPIError) as err:
+                            print('attempt: {} |'.format(
+                                str(attempt).zfill(3)), err)
+                            attempt += 1
+                            time.sleep(retry)
+                            now = datetime.datetime.now()
+                            self.time_of_last_public_query = now
+                            continue
+
+            # privat API, determine increment
             if query_type == 'ledger/trade history':
                 incr = 2
             elif query_type == 'other':
@@ -140,11 +172,12 @@ class KrakenAPI(object):
         An instance of the krakenex.API class. A reference to the input
         is created and accessible via ``KrakenAPI.api``.
 
-    tier : int, optional (default=3)
+    tier : str, optional (default='Intermediate')
         Your Kraken tier level, used to adjust the limit of the call rate to
-        the Kraken API in order to prevent 15 minute temporary lockouts. See
-        https://support.kraken.com/hc/en-us/articles/206548367.
-        Set tier=0 to disable the call rate limiter.
+        the Kraken API in order to prevent 15 minute temporary lockouts.
+        Must be one of {'None', 'Starter', 'Intermediate', 'Pro'}.
+        Set tier='None' to disable the call rate limiter.
+        See https://support.kraken.com/hc/en-us/articles/206548367.
 
     retry : float, optional (default=.5)
         Sleep for ``retry`` seconds after an HTTPError/KrakenAPIError occurred
@@ -164,27 +197,29 @@ class KrakenAPI(object):
 
     """
 
-    def __init__(self, api, tier=3, retry=.5, crl_sleep=5):
+    def __init__(self, api, tier='Intermediate', retry=1, crl_sleep=5):
 
         self.api = api
 
         # api call rate limiter
+        self.time_of_last_public_query = datetime.datetime.now()
         self.time_of_last_query = datetime.datetime.now()
+
         self.api_counter = 0
 
-        if tier == 0:
+        if tier == 'None':
             self.limit = float('inf')
             self.factor = 3  # does not matter
 
-        elif tier == 2:
+        elif tier == 'Starter':
             self.limit = 15
             self.factor = 3  # down by 1 every three seconds
 
-        elif tier == 3:
+        elif tier == 'Intermediate':
             self.limit = 20
             self.factor = 2  # down by 1 every two seconds
 
-        elif tier == 4:
+        elif tier == 'Pro':
             self.limit = 20
             self.factor = 1  # down by 1 every one second
 
@@ -193,7 +228,7 @@ class KrakenAPI(object):
         self.crl_sleep = crl_sleep
 
     @crl_sleep
-    @callratelimiter('other')
+    @callratelimiter('public')
     def get_server_time(self):
         """Get server time.
 
@@ -234,7 +269,7 @@ class KrakenAPI(object):
         return dt, unixtime
 
     @crl_sleep
-    @callratelimiter('other')
+    @callratelimiter('public')
     def get_asset_info(self, info=None, aclass=None, asset=None):
         """Get asset info.
 
@@ -291,7 +326,7 @@ class KrakenAPI(object):
         return assets
 
     @crl_sleep
-    @callratelimiter('other')
+    @callratelimiter('public')
     def get_tradable_asset_pairs(self, info=None, pair=None):
         """Get tradable asset pairs.
 
@@ -366,7 +401,7 @@ class KrakenAPI(object):
         return pairs
 
     @crl_sleep
-    @callratelimiter('other')
+    @callratelimiter('public')
     def get_ticker_information(self, pair):
         """Get ticker information.
 
@@ -425,7 +460,7 @@ class KrakenAPI(object):
         return ticker
 
     @crl_sleep
-    @callratelimiter('other')
+    @callratelimiter('public')
     def get_ohlc_data(self, pair, interval=1, since=None, ascending=False):
         """Get ohlc data for a given pair.
 
@@ -521,7 +556,7 @@ class KrakenAPI(object):
             return ohlc, last
 
     @crl_sleep
-    @callratelimiter('other')
+    @callratelimiter('public')
     def get_order_book(self, pair, count=100, ascending=False):
         """Get order book (market depth).
 
@@ -603,7 +638,7 @@ class KrakenAPI(object):
         return asks, bids
 
     @crl_sleep
-    @callratelimiter('ledger/trade history')
+    @callratelimiter('public')
     def get_recent_trades(self, pair, since=None, ascending=False):
         """Get recent trades data.
 
@@ -691,7 +726,7 @@ class KrakenAPI(object):
         return trades, last
 
     @crl_sleep
-    @callratelimiter('other')
+    @callratelimiter('public')
     def get_recent_spread_data(self, pair, since=None, ascending=False):
         """Get recent spread data.
 
@@ -1014,7 +1049,7 @@ class KrakenAPI(object):
         return openorders
 
     @crl_sleep
-    @callratelimiter('other')
+    @callratelimiter('ledger/trade history')
     def get_closed_orders(self, trades=False, userref=None, start=None,
                           end=None, ofs=None, closetime=None, otp=None):
         """Get closed orders info.
